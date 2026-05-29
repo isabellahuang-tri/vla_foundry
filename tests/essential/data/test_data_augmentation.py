@@ -485,6 +485,15 @@ def _make_tiff_bytes(h=4, w=6, dtype=np.uint16):
     return buf.getvalue()
 
 
+def _make_uint16_png_bytes(h=4, w=6):
+    """Create 16-bit grayscale PNG bytes (mirrors how depth images are stored)."""
+    from PIL import Image as PILImage
+
+    buf = io.BytesIO()
+    PILImage.fromarray(np.random.randint(0, 4000, (h, w), dtype=np.uint16)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def test_decode_and_augment_sample_decodes_all_field_types():
     """decode_and_augment_sample should handle images, JSON, NPZ, TIFF, txt, and passthrough."""
     import json
@@ -528,6 +537,24 @@ def test_decode_and_augment_sample_decodes_all_field_types():
     assert result["caption.txt"] == "a photo of a robot"
     # Unknown bytes passed through
     assert result["other.bin"] == b"raw-bytes"
+
+
+def test_decode_and_augment_sample_raises_on_non_uint8_image():
+    """16-bit images (e.g. depth PNGs) must fail loudly, not be silently coerced.
+
+    The augmentation pipeline is RGB-only and assumes 8-bit images. A non-uint8
+    decode signals non-RGB data reached the pipeline; it should raise a clear,
+    actionable error rather than be quietly downcast or crash deeper in torch.stack.
+    """
+    augmentations = Augmentations(None)  # no transforms; tripwire is independent of them
+
+    sample = {
+        "__key__": "s1",
+        "depth_t0.png": _make_uint16_png_bytes(8, 10),
+    }
+
+    with pytest.raises(ValueError, match="8-bit"):
+        augmentations.decode_and_augment_sample(sample)
 
 
 def test_decode_and_augment_sample_applies_transforms():

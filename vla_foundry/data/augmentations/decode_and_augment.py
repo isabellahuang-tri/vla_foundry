@@ -57,7 +57,7 @@ def _decode_with_torchvision(data: bytes) -> torch.Tensor:
         return _decode_with_pil(data)
 
 
-def _is_image_key(key: str) -> bool:
+def is_image_key(key: str) -> bool:
     """Check if a key represents an image (handles both 'cam.jpg' and bare 'jpg')."""
     lower = key.lower()
     return lower.endswith(_IMAGE_EXTENSIONS) or lower in {ext.lstrip(".") for ext in _IMAGE_EXTENSIONS}
@@ -71,7 +71,7 @@ def _is_tiff_key(key: str) -> bool:
 
 def fast_image_decoder(key: str, data: bytes) -> torch.Tensor | None:
     """WebDataset-compatible image decoder returning CHW uint8 tensors."""
-    if not _is_image_key(key):
+    if not is_image_key(key):
         return None
     return _decode_with_torchvision(data)
 
@@ -150,9 +150,22 @@ class Augmentations:
             lower = key.lower()
             if not isinstance(data, bytes):
                 result[key] = data
-            elif _is_image_key(key):
+            elif is_image_key(key):
                 tensor = fast_image_decoder(key, data)
                 if tensor is not None:
+                    if tensor.dtype != torch.uint8:
+                        # Tripwire: the augmentation pipeline is RGB-only and assumes
+                        # 8-bit images. torchvision decodes 16-bit PNGs (e.g. depth) to
+                        # uint16, which cannot be stacked with uint8 RGB. Fail loudly
+                        # rather than silently coercing so unexpected non-RGB data is
+                        # surfaced. Expected non-RGB images (depth) are dropped before
+                        # this stage; see drop_unused_images in pipelines/robotics.py.
+                        raise ValueError(
+                            f"Image '{key}' decoded to {tensor.dtype}, but the augmentation "
+                            f"pipeline requires 8-bit (uint8) images. This usually means non-RGB "
+                            f"data (e.g. a 16-bit depth PNG) reached the RGB pipeline. Exclude it "
+                            f"from camera_names or preprocess it to 8-bit RGB."
+                        )
                     image_keys.append(key)
                     image_tensors.append(tensor)
                 else:

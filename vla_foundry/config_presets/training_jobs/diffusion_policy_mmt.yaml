@@ -1,0 +1,48 @@
+model:
+  <<: !include ../models/diffusion_policy.yaml
+  vision_language_backbone:
+    hf_pretrained: openai/clip-vit-base-patch32
+    freeze_text_encoder: True
+  # NOTE: The following block overrides fields from the included diffusion_policy.yaml.
+  # This creates configuration duplication that is difficult to maintain.
+  # Root cause: Draccus currently does not support deep merging or partial overrides of nested configs.
+  # If ../models/diffusion_policy.yaml or ../models/transformer_100m.yaml change, this file must be manually updated.
+  # Future: Refactor if Draccus adds better merge strategies, or revisit config structure to avoid duplication.
+  transformer:
+    <<: !include ../models/transformer_100m.yaml
+    is_causal: True
+data:
+  <<: !include ../data/mmt/mmt_data_params.yaml
+  <<: !include ../data/diffusion_policy.yaml
+  dataset_manifest: 
+    # - s3://tri-mmt-data/lpp_data/vla_foundry/20251028_paper_towel/shards/manifest.jsonl
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/coffee_spill/shards/manifest.jsonl
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/microwave/shards/manifest.jsonl
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/paper_towel/shards/manifest.jsonl
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/printer_room/shards/manifest.jsonl
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/produce/shards/manifest.jsonl
+  dataset_statistics: 
+    # - s3://tri-mmt-data/lpp_data/vla_foundry/20251028_paper_towel/shards/stats.json
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/coffee_spill/shards/stats.json
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/microwave/shards/stats.json
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/paper_towel/shards/stats.json
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/printer_room/shards/stats.json
+    - s3://tri-ml-datasets-uw2/vla_foundry_scratch/mmt_sample/webdataset/202510_hq_video_shoot_demos/produce/shards/stats.json
+  dataset_modality: 
+    - robotics
+    - robotics
+    - robotics
+    - robotics
+    - robotics
+  dataset_weighting: 
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+distributed:
+  fsdp: True
+hparams:
+  <<: !include ../hparams/diffusion_policy.yaml
+  per_gpu_batch_size: 16
+  global_batch_size: 128
