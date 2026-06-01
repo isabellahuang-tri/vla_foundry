@@ -229,7 +229,7 @@ class RerunBackend:
             original_image_size: Original image size as (width, height) before any preprocessing.
         """
         # Convert depth to meters
-        depth_m = raw_depth.astype(np.float32) * depth_scale
+        depth_m = raw_depth.astype(np.float32) / depth_scale
 
         H, W = depth_m.shape
 
