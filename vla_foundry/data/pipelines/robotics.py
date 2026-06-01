@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import webdataset as wds
 
-from vla_foundry.data.augmentations.decode_and_augment import Augmentations
+from vla_foundry.data.augmentations.decode_and_augment import Augmentations, is_image_key
 from vla_foundry.data.pipelines.base import BaseWebDatasetPipeline
 from vla_foundry.data.pipelines.webdataset_cache import get_tarfile_to_samples_stage
 from vla_foundry.data.processor.robotics_processor import RoboticsProcessor
@@ -20,6 +20,48 @@ def filter_robotics_sample(sample):
     has_metadata = any(k.endswith("metadata.json") for k in sample)
     has_images = any(k.endswith(".jpg") for k in sample)
     return has_lowdim and has_metadata and has_images
+
+
+def _image_key_aliases(field_key: str) -> tuple[str, str]:
+    """Return the (full_stem, short_stem) for an image field key.
+
+    The full stem is the key without its file extension (e.g.
+    "observation.images.cam_t0"); the short stem strips a dotted prefix down to
+    the camera+timestep ("cam_t0") so it matches `image_names` regardless of how
+    the camera was named during preprocessing. For undotted keys the two are
+    identical (e.g. "rgb_t0").
+    """
+    img_key = field_key.rsplit(".", 1)[0]
+    parts = img_key.rsplit("_t", 1)
+    short_key = parts[0].rsplit(".", 1)[-1] + "_t" + parts[1] if len(parts) == 2 and "." in parts[0] else img_key
+    return img_key, short_key
+
+
+def drop_unused_images(sample, image_names):
+    """Drop image-extension keys that are not among the consumed camera images.
+
+    This pipeline is RGB-only: only the cameras listed in `image_names` are used
+    as model inputs. Robotics shards routinely co-locate other images (e.g. 16-bit
+    depth PNGs used by visualization tooling) in the same sample. Removing them
+    before the decode+augment stage keeps the RGB pipeline from decoding/augmenting
+    non-RGB data, rather than silently coercing it. Non-image fields (npz/json) are
+    always kept.
+
+    Falls back to keeping everything when `image_names` is empty/unset.
+    """
+    if not image_names:
+        return sample
+    allowed = set(image_names)
+    kept = {}
+    for key, value in sample.items():
+        if is_image_key(key):
+            full_stem, short_stem = _image_key_aliases(key)
+            if full_stem in allowed or short_stem in allowed:
+                kept[key] = value
+            # else: unused image (e.g. depth) -> dropped before decode
+        else:
+            kept[key] = value
+    return kept
 
 
 def select_language_instruction(language_instructions, instruction_types):
@@ -172,6 +214,12 @@ class RoboticsPipeline(BaseWebDatasetPipeline):
             wds.split_by_worker,
             get_tarfile_to_samples_stage(
                 cache_cfg=cache_cfg,
+                handler=log_and_continue,
+            ),
+            # RGB-only pipeline: drop co-located non-camera images (e.g. depth PNGs)
+            # before decoding so they are never decoded/augmented as RGB.
+            wds.map(
+                lambda sample: drop_unused_images(sample, self.data_params.image_names),
                 handler=log_and_continue,
             ),
             wds.map(self.augmentations.decode_and_augment_sample, handler=log_and_continue),

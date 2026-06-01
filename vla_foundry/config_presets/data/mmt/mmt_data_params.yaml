@@ -1,0 +1,43 @@
+type: robotics
+
+language_instruction_types:
+  - original
+  - randomized
+
+# RGB-only training: depth frames are co-located in the shards (16-bit *.depth_t*.png)
+# but are NOT model inputs. Listing only `rgb` keeps `image_names` = [rgb_t-1, rgb_t0],
+# and the RoboticsPipeline drops the depth PNGs before the RGB decode/augment stage
+# (see drop_unused_images in vla_foundry/data/pipelines/robotics.py).
+camera_names:
+  - rgb
+
+image_indices:
+  - -1
+  - 0
+
+# Field names match the baked mmt_sample shards (e.g. 202510_hq_video_shoot_demos /
+# 20241216_avas_market_grasping_ts): combined end-effector poses (chest & chassis
+# frames), head + chest poses, and 6-axis wrench. Per-arm chassis-frame eef poses
+# are the action targets.
+proprioception_fields:
+  - chassis_T_eef_pose
+  - chest_T_head_pose
+  - chassis_T_chest_pose
+  - wrench
+
+action_fields:
+  - chassis_T_left_eef_pose
+  - chassis_T_right_eef_pose
+
+intrinsics_fields:
+  - intrinsics.rgb
+
+extrinsics_fields:
+  - extrinsics.rgb
+
+normalization:
+  enabled: true
+  method: percentile_1_99
+  scope: global
+  epsilon: 1e-2
+  centered_norm: true
