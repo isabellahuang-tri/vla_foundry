@@ -842,14 +842,10 @@ class Plotter:
 class RerunSampleVisualizer:
     """High-level visualizer that ties together reading, frames, and plotting."""
 
-    def __init__(self, normalizer_bundle: NormalizerBundle, command_mode: str = "none"):
+    def __init__(self, normalizer_bundle: NormalizerBundle):
         self._reader = TarReader(normalizer_bundle)
         self._frames = FrameAssembler()
         self._plot = Plotter()
-        self._action_fields = normalizer_bundle.action_fields
-        self._command_mode = "action" if command_mode == "velocity" else command_mode
-        logging.info("Action fields: %s", list(self._action_fields))
-        logging.info("Command visualization mode: %s", self._command_mode)
 
     def _extract_depth_scale(self, metadata: Mapping[str, object]) -> float:
         """Extract scalar depth scale from heterogeneous metadata representations."""
@@ -867,65 +863,6 @@ class RerunSampleVisualizer:
         if isinstance(raw, (list, tuple, np.ndarray)):
             return float(np.asarray(raw).reshape(-1)[0])
         raise ValueError(f"Unsupported depth_scale type: {type(raw)}")
-
-    @staticmethod
-    def _split_command_fields(action_fields: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        velocity_fields = tuple(
-            field
-            for field in action_fields
-            if field in VELOCITY_ACTION_FIELDS or field in LEGACY_BIMANUAL_VELOCITY_FIELDS
-        )
-        position_fields = tuple(field for field in action_fields if is_position_action_field(field))
-        return velocity_fields, position_fields
-
-    def _select_command_fields(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        velocity_fields, position_fields = self._split_command_fields(self._action_fields)
-
-        if self._command_mode == "action":
-            position_fields = ()
-        elif self._command_mode == "position":
-            velocity_fields = ()
-
-        self._validate_command_fields(self._action_fields, velocity_fields, position_fields, "data.action_fields")
-        return velocity_fields, position_fields
-
-    def _validate_command_fields(
-        self,
-        action_fields: Sequence[str],
-        velocity_fields: tuple[str, ...],
-        position_fields: tuple[str, ...],
-        source_label: str,
-    ) -> None:
-        missing = []
-        if self._command_mode in {"all", "action"} and not velocity_fields:
-            missing.append("velocity/action")
-        if self._command_mode in {"all", "position"} and not position_fields:
-            missing.append("position")
-        if not missing:
-            return
-
-        configured = ", ".join(action_fields) if action_fields else "<none>"
-        raise ValueError(
-            f"--command-mode {self._command_mode!r} requires non-empty {', '.join(missing)} fields in "
-            f"{source_label}. Configured action_fields: {configured}"
-        )
-
-    def _select_prediction_fields(
-        self,
-        prediction: PredictionBundle,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        velocity_fields, position_fields = self._split_command_fields(prediction.action_fields)
-        if self._command_mode == "action":
-            position_fields = ()
-        elif self._command_mode == "position":
-            velocity_fields = ()
-        self._validate_command_fields(
-            prediction.action_fields,
-            velocity_fields,
-            position_fields,
-            f"prediction '{prediction.label}' action_fields",
-        )
-        return velocity_fields, position_fields
 
     @staticmethod
     def _anchor_index(metadata: Mapping[str, object] | None, num_steps: int) -> int:
@@ -1034,7 +971,6 @@ class RerunSampleVisualizer:
         lowdim: Mapping[str, NDArray] | None = payload.get("lowdim")  # type: ignore[assignment]
         metadata: Mapping[str, object] | None = payload.get("metadata")  # type: ignore[assignment]
 
-        command_trajectories: dict[str, NDArray] = {}
         anchor_index = 0
         if lowdim is not None:
             frame_poses = self._frames.chassis_frame_poses(lowdim)
@@ -1043,54 +979,6 @@ class RerunSampleVisualizer:
                 rr.set_time("sample", sequence=anchor_index)
                 self._plot.log_images("", img_data)
             self._plot.log_coordinate_frames(frame_poses)
-            if self._command_mode != "none":
-                velocity_fields, position_fields = self._select_command_fields()
-                gt_path_prefix = "chassis/gt" if prediction_bundles else "chassis"
-                if self._command_mode in {"all", "action"}:
-                    self._plot.log_lift_action(lowdim, frame_poses["chassis/chest"], anchor_index)
-                if velocity_fields:
-                    command_trajectories.update(
-                        self._plot.log_velocity_commands(
-                            lowdim,
-                            frame_poses,
-                            velocity_fields,
-                            anchor_index,
-                            path_prefix=gt_path_prefix,
-                        )
-                    )
-                if position_fields:
-                    command_trajectories.update(
-                        self._plot.log_position_commands(
-                            lowdim,
-                            frame_poses,
-                            position_fields,
-                            anchor_index,
-                            path_prefix=gt_path_prefix,
-                        )
-                    )
-                for prediction in prediction_bundles:
-                    pred_velocity_fields, pred_position_fields = self._select_prediction_fields(prediction)
-                    pred_path_prefix = f"chassis/pred/{prediction.label}"
-                    if pred_velocity_fields:
-                        command_trajectories.update(
-                            self._plot.log_velocity_commands(
-                                prediction.lowdim,
-                                frame_poses,
-                                pred_velocity_fields,
-                                anchor_index,
-                                path_prefix=pred_path_prefix,
-                            )
-                        )
-                    if pred_position_fields:
-                        command_trajectories.update(
-                            self._plot.log_position_commands(
-                                prediction.lowdim,
-                                frame_poses,
-                                pred_position_fields,
-                                anchor_index,
-                                path_prefix=pred_path_prefix,
-                            )
-                        )
         elif img_data:
             self._plot.log_images("", img_data)
 
@@ -1128,26 +1016,6 @@ class RerunSampleVisualizer:
         )
         logging.info("Plotted point cloud for sample %s", sample_id)
 
-        if not command_trajectories:
-            logging.info("No command trajectories logged for sample %s; skipping projected overlays", sample_id)
-            return
-
-        head_camera_T_chassis = invert_homogeneous_transform(frame_poses["chassis/head_camera"][anchor_index])
-        camera_frame_trajectories = {
-            path: transform_points_to_camera_frame(head_camera_T_chassis, pts)
-            for path, pts in command_trajectories.items()
-        }
-
-        # Project command trajectories onto the decoded TAR images, not source-resolution images.
-        img_data_with_traces = self._projected_trajectory_images(
-            img_data,
-            lowdim,
-            original_image_sizes,
-            camera_frame_trajectories,
-        )
-        if img_data_with_traces:
-            self._plot.log_images("projected_trajectories", img_data_with_traces)
-
     def run(self, input_path: str) -> None:
         """Run the visualizer over one TAR file or all TAR files beneath a directory/prefix."""
         targets = list_tar_targets(input_path, recursive=True)
@@ -1184,15 +1052,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=("Path to data_params YAML (e.g., vla_foundry/config_presets/data/mmt/mmt_data_params.yaml)"),
     )
     parser.add_argument(
-        "--command-mode",
-        default="none",
-        choices=["none", "all", "action", "position", "velocity"],
-        help=(
-            "Command visualization mode. 'none' skips all command reading/visualization; "
-            "'all' logs action and position commands; 'velocity' is an alias for action."
-        ),
-    )
-    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -1214,7 +1073,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     stats_uri = fs.unstrip_protocol(stats_path)
     norm = NormalizerBundle.from_paths(args.data_params, stats_uri)
-    visualizer = RerunSampleVisualizer(norm, command_mode=args.command_mode)
+    visualizer = RerunSampleVisualizer(norm)
     visualizer.run(args.input_path)
 
 
