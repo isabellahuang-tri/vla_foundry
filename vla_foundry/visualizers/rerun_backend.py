@@ -206,3 +206,76 @@ class RerunBackend:
             sequence: Integer sequence number for this timeline.
         """
         rr.set_time(timeline, sequence=sequence)
+
+    def log_point_cloud(
+        self,
+        path: str,
+        raw_depth: np.ndarray,
+        depth_scale: float | np.ndarray,
+        color_image: np.ndarray | None,
+        intrinsics_rgb: np.ndarray,
+        original_image_size: tuple[int, int],
+        **kwargs,
+    ) -> None:
+        """
+        Log a point cloud reconstructed from depth and RGB images.
+
+        Args:
+            path: Path in the visualization hierarchy.
+            raw_depth: Raw depth image (H, W) in depth units (e.g., uint16).
+            depth_scale: Scale factor to convert depth units to meters.
+            color_image: Optional RGB image (H, W, 3) for coloring points.
+            intrinsics_rgb: Camera intrinsics as (fx, fy, cx, cy) or 3x3 matrix.
+            original_image_size: Original image size as (width, height) before any preprocessing.
+        """
+        # Convert depth to meters
+        depth_m = raw_depth.astype(np.float32) / depth_scale
+
+        H, W = depth_m.shape
+
+        # Handle both 3x3 matrix and (fx, fy, cx, cy) formats
+        intrinsics_rgb = np.asarray(intrinsics_rgb)
+
+        # Flatten if nested (e.g., shape (1, 3, 3) -> (3, 3))
+        while intrinsics_rgb.ndim > 2:
+            intrinsics_rgb = intrinsics_rgb[0]
+
+        if intrinsics_rgb.shape == (3, 3):
+            fx = intrinsics_rgb[0, 0]
+            fy = intrinsics_rgb[1, 1]
+            cx = intrinsics_rgb[0, 2]
+            cy = intrinsics_rgb[1, 2]
+        elif intrinsics_rgb.shape == (4,):
+            fx, fy, cx, cy = intrinsics_rgb
+        elif intrinsics_rgb.shape == (3,):
+            # Assume (fx, cx, cy) with fy=fx (square pixels)
+            fx, cx, cy = intrinsics_rgb
+            fy = fx
+        else:
+            raise ValueError(f"intrinsics_rgb must be shape (3, 3), (4,), or (3,), got {intrinsics_rgb.shape}")
+
+        # Create pixel coordinate grids
+        u, v = np.meshgrid(np.arange(W), np.arange(H))
+
+        # Unproject to 3D in camera frame
+        Z = depth_m
+        X = (u - cx) * Z / fx
+        Y = (v - cy) * Z / fy
+
+        # Stack into (H, W, 3) and flatten
+        points_3d = np.stack([X, Y, Z], axis=-1).reshape(-1, 3)
+
+        # Filter out invalid points (zero depth or behind camera)
+        valid_mask = (Z > 0).flatten()
+        points_3d = points_3d[valid_mask]
+
+        # Extract colors if available
+        colors = None
+        if color_image is not None:
+            # Ensure color_image matches depth dimensions
+            if color_image.shape[:2] == (H, W):
+                colors_flat = color_image.reshape(-1, 3)[valid_mask]
+                colors = colors_flat.astype(np.uint8)
+
+        # Log using existing Points3D method
+        rr.log(path, rr.Points3D(points_3d, colors=colors))

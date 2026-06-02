@@ -515,6 +515,35 @@ class Visualizer:
         if _STATE.backend and hasattr(_STATE.backend, "set_time"):
             _STATE.backend.set_time(timeline, sequence=sequence)
 
+    @ensure_initialized_and_enabled
+    def log_point_cloud(
+        self,
+        path: str,
+        raw_depth: np.ndarray,
+        depth_scale: float | np.ndarray,
+        color_image: np.ndarray | None,
+        intrinsics_rgb: np.ndarray,
+        original_image_size: tuple[int, int],
+        **kwargs,
+    ) -> None:
+        """Log a point cloud reconstructed from depth and RGB images.
+
+        Args:
+            path: Path in the visualization hierarchy.
+            raw_depth: Raw depth image (H, W) in depth units (e.g., uint16).
+            depth_scale: Scale factor to convert depth units to meters.
+            color_image: Optional RGB image (H, W, 3) for coloring points.
+            intrinsics_rgb: Camera intrinsics as (fx, fy, cx, cy).
+            original_image_size: Original image size as (width, height) before any preprocessing.
+        """
+        every_n = _pop_every_n(kwargs)
+        full_path = _prefix(path)
+        if not _should_log("point_cloud", full_path, every_n):
+            return
+        _STATE.backend.log_point_cloud(  # type: ignore[union-attr]
+            full_path, raw_depth, depth_scale, color_image, intrinsics_rgb, original_image_size, **kwargs
+        )
+
     def flush(self) -> None:
         # Flushing should still work even if sparse logging is temporarily disabled.
         if not _STATE.initialized or _STATE.backend is None:
@@ -654,6 +683,7 @@ log_trajectory = _default_visualizer.log_trajectory
 log_line_strips3d = _default_visualizer.log_line_strips3d
 log_text = _default_visualizer.log_text
 log_pose = _default_visualizer.log_pose
+log_point_cloud = _default_visualizer.log_point_cloud
 set_time = _default_visualizer.set_time
 flush = _default_visualizer.flush
 shutdown = _default_visualizer.shutdown
